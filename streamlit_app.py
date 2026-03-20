@@ -19,8 +19,15 @@ import os
 MOCK_MODE = True
 try:
     import anthropic
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        client = anthropic.Anthropic()
+    # Check both Streamlit Cloud secrets and environment variables
+    api_key = None
+    try:
+        api_key = st.secrets["ANTHROPIC_API_KEY"]
+    except (KeyError, FileNotFoundError):
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+
+    if api_key:
+        client = anthropic.Anthropic(api_key=api_key)
         MOCK_MODE = False
 except ImportError:
     pass
