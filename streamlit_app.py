@@ -17,20 +17,26 @@ import os
 # Try to import anthropic; if not available or no API key, use mock mode
 # ──────────────────────────────────────────────
 MOCK_MODE = True
+_init_error = None
 try:
     import anthropic
-    # Check both Streamlit Cloud secrets and environment variables
+
+    # Check Streamlit Cloud secrets first, then env vars
     api_key = None
     try:
         api_key = st.secrets["ANTHROPIC_API_KEY"]
-    except (KeyError, FileNotFoundError):
+    except Exception:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
 
     if api_key:
         client = anthropic.Anthropic(api_key=api_key)
         MOCK_MODE = False
+    else:
+        _init_error = "No API key found in secrets or environment variables."
 except ImportError:
-    pass
+    _init_error = "anthropic package not installed."
+except Exception as e:
+    _init_error = f"Error initializing Claude client: {e}"
 
 # ──────────────────────────────────────────────
 # Page config
@@ -222,26 +228,43 @@ ELIGIBILITY CRITERIA:
 
 Return ONLY a JSON array of objects. No other text."""
 
-    response = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=2000,
-        messages=[{"role": "user", "content": prompt}]
-    )
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}]
+        )
+    except Exception as e:
+        st.error(f"Claude API call failed: {e}")
+        return get_mock_assessment(criteria)
+
+    raw_text = response.content[0].text
+
+    # Strip markdown code fences if Claude wraps the JSON
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = "\n".join(cleaned.split("\n")[1:])  # drop first ```json line
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
 
     try:
-        results_raw = json.loads(response.content[0].text)
-        # Merge with original criteria data
-        results = []
-        for c in criteria:
-            match = next((r for r in results_raw if r["id"] == c["id"]), None)
-            if match:
-                results.append({**c, **match})
-            else:
-                results.append({**c, "status": "UNCERTAIN", "confidence": "LOW",
-                               "evidence": "Not evaluated", "source": "N/A"})
-        return results
-    except (json.JSONDecodeError, IndexError):
+        results_raw = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        st.error(f"Failed to parse Claude response as JSON: {e}")
+        st.code(raw_text[:1000], language="text")
         return get_mock_assessment(criteria)
+
+    # Merge with original criteria data
+    results = []
+    for c in criteria:
+        match = next((r for r in results_raw if r["id"] == c["id"]), None)
+        if match:
+            results.append({**c, **match})
+        else:
+            results.append({**c, "status": "UNCERTAIN", "confidence": "LOW",
+                           "evidence": "Not evaluated", "source": "N/A"})
+    return results
 
 
 # ──────────────────────────────────────────────
@@ -251,7 +274,14 @@ st.title("🏥 Study Eligibility Screener")
 st.caption("AI-powered patient screening for clinical research studies")
 
 if MOCK_MODE:
-    st.info("🔧 **Demo Mode** — Running with mock AI responses. Set ANTHROPIC_API_KEY to use Claude.", icon="ℹ️")
+    msg = "🔧 **Demo Mode** — Running with mock AI responses."
+    if _init_error:
+        msg += f" Reason: {_init_error}"
+    else:
+        msg += " Set ANTHROPIC_API_KEY in Streamlit secrets to use Claude."
+    st.info(msg, icon="ℹ️")
+else:
+    st.success("✅ **Live Mode** — Connected to Claude API.", icon="✅")
 
 # Sidebar: study selection
 with st.sidebar:
